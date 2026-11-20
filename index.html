@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Raja Chor Sipahi Mantri — Private Multiplayer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body class="theme-light">
+
+  <!-- Global Notification / Connection Warning Banner -->
+  <div id="toast-banner" class="toast hidden" role="alert">
+    <span id="toast-icon">⚠️</span>
+    <span id="toast-message">Connection notice</span>
+    <button id="toast-close" class="toast-close" aria-label="Close">✕</button>
+  </div>
+
+  <!-- Disconnect Modal Overlay -->
+  <div id="disconnect-modal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-icon">🔌</div>
+      <h2 id="modal-title">Connection Lost</h2>
+      <p id="modal-desc">A player disconnected from the room.</p>
+      <button id="modal-home-btn" class="btn btn-primary btn-full">Back to Home</button>
+    </div>
+  </div>
+
+  <main class="app-shell">
+
+    <!-- =========================================================
+         SCREEN 1: HOME PAGE & PRIVATE INVITE GATE
+    ========================================================== -->
+    <section id="screen-home" class="screen active">
+      <div class="brand-header">
+        <div class="crown-emblem" aria-hidden="true">
+          <svg viewBox="0 0 64 48" width="54" height="40">
+            <path d="M6 38L2 14L19 25L32 8L45 25L62 14L58 38H6Z" fill="#FACC15" stroke="#1E1035" stroke-width="3.5" stroke-linejoin="round"/>
+            <rect x="6" y="38" width="52" height="6" rx="3" fill="#EAB308" stroke="#1E1035" stroke-width="3"/>
+            <circle cx="2" cy="12" r="3" fill="#FACC15" stroke="#1E1035" stroke-width="2.5"/>
+            <circle cx="32" cy="6" r="3.5" fill="#FACC15" stroke="#1E1035" stroke-width="2.5"/>
+            <circle cx="62" cy="12" r="3" fill="#FACC15" stroke="#1E1035" stroke-width="2.5"/>
+          </svg>
+        </div>
+        <h1 class="game-title">
+          <span class="c-raja">Raja</span> <span class="c-chor">Chor</span><br/>
+          <span class="c-sipahi">Sipahi</span> <span class="c-mantri">Mantri</span>
+        </h1>
+        <div class="pill-badge">
+          <span class="icon-inline">👥</span> Private 4-Player Game
+        </div>
+      </div>
+
+      <div class="form-card">
+        <label class="input-label" for="player-name-input">
+          <span>👤</span> Your Name
+        </label>
+        <input
+          type="text"
+          id="player-name-input"
+          class="text-input"
+          placeholder="Enter your name (e.g., Aditya)"
+          maxlength="16"
+          autocomplete="off"
+        />
+
+        <button id="create-room-btn" class="btn btn-primary btn-lg btn-full">
+          <span class="btn-icon-box">+</span>
+          <span class="btn-text-stack">
+            <strong>Create Private Room</strong>
+            <small>Start a new 4-friend game</small>
+          </span>
+        </button>
+
+        <div class="divider"><span>OR JOIN WITH CODE</span></div>
+
+        <div class="join-row">
+          <input
+            type="text"
+            id="room-code-input"
+            class="text-input code-input"
+            placeholder="ROOM CODE"
+            maxlength="6"
+            autocomplete="off"
+          />
+          <button id="join-room-btn" class="btn btn-outline btn-join">
+            Join Room
+          </button>
+        </div>
+      </div>
+
+      <div class="how-to-card">
+        <h3>🎮 How to Play?</h3>
+        <ol class="steps-list">
+          <li><span class="step-num">1</span> Create a private room &amp; share the link with 3 friends</li>
+          <li><span class="step-num">2</span> Open your secret chit (Raja, Chor, Sipahi, or Mantri)</li>
+          <li><span class="step-num">3</span> Sipahi catches the Chor to win bonus points!</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         SCREEN 2: PRIVATE WAITING ROOM (LOBBY)
+    ========================================================== -->
+    <section id="screen-lobby" class="screen">
+      <div class="top-nav">
+        <button id="leave-lobby-btn" class="icon-circle-btn" title="Leave Room">←</button>
+        <div class="mini-brand">👑 Raja Chor Sipahi Mantri</div>
+        <div class="spacer-36"></div>
+      </div>
+
+      <div class="lobby-card">
+        <div class="lobby-card-header">
+          <span>👥 Game Lobby</span>
+          <span id="lobby-status-pill" class="status-pill waiting">● Waiting</span>
+        </div>
+
+        <div class="room-code-box">
+          <span class="room-code-label">PRIVATE ROOM CODE</span>
+          <div class="room-code-display">
+            <span id="display-room-code">------</span>
+            <button id="copy-code-btn" class="copy-btn" title="Copy Code">📋</button>
+          </div>
+          <p class="room-code-hint">Share this code or invite link with 3 friends</p>
+          <button id="share-link-btn" class="btn btn-soft-purple btn-full">
+            🔗 Share Invite Link
+          </button>
+        </div>
+
+        <div class="players-header">
+          <span>👥 Players</span>
+          <span id="player-count-badge" class="count-badge">1 / 4</span>
+        </div>
+
+        <div id="player-slots-list" class="player-slots">
+          <!-- Populated dynamically by JS -->
+        </div>
+
+        <div id="lobby-info-banner" class="info-banner">
+          <span class="info-icon">⏳</span>
+          <div>
+            <strong>Waiting for players</strong>
+            <p>Game starts when all 4 friends have joined.</p>
+          </div>
+        </div>
+
+        <button id="start-game-btn" class="btn btn-primary btn-full btn-lg hidden" disabled>
+          ▶ Start Game (1/4)
+        </button>
+        <div id="guest-wait-msg" class="guest-wait-box hidden">
+          Waiting for Host to start the game...
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         SCREEN 3: SECRET CHIT DISTRIBUTION & REVEAL
+    ========================================================== -->
+    <section id="screen-chit" class="screen dark-screen">
+      <div class="dark-top-bar">
+        <span id="chit-round-badge" class="dark-pill">Round 1</span>
+        <span class="dark-brand">👑 Raja Chor Sipahi Mantri</span>
+        <span id="ready-counter-badge" class="dark-pill">0/4 Ready</span>
+      </div>
+
+      <!-- Phase 3A: Shuffling Animation -->
+      <div id="chit-shuffle-view" class="chit-stage">
+        <h2 class="stage-heading">Distributing Roles</h2>
+        <p class="stage-sub">Mixing the 4 secret chits...</p>
+
+        <div class="shuffle-arena" aria-hidden="true">
+          <div class="mini-chit c1">👑</div>
+          <div class="mini-chit c2">🦹</div>
+          <div class="mini-chit c3">🛡️</div>
+          <div class="mini-chit c4">💼</div>
+        </div>
+
+        <div class="shuffling-pill">🔀 Shuffling...</div>
+      </div>
+
+      <!-- Phase 3B: 3D Flip Secret Chit -->
+      <div id="chit-reveal-view" class="chit-stage hidden">
+        <h2 class="stage-heading">👤 Your Secret Chit</h2>
+        <p class="stage-sub" id="chit-instruction">Tap the chit to peek at your role</p>
+
+        <div class="flip-scene" id="chit-card-trigger" role="button" tabindex="0" aria-label="Flip secret chit">
+          <div class="flip-card" id="secret-flip-card">
+            <!-- Front (Face Down) -->
+            <div class="flip-face flip-front">
+              <div class="chit-ornament">
+                <span class="chit-crown">👑</span>
+                <span class="chit-watermark">SECRET CHIT</span>
+                <span class="chit-tap-hint">Tap to Reveal</span>
+              </div>
+            </div>
+            <!-- Back (Revealed Role) -->
+            <div class="flip-face flip-back" id="secret-card-back">
+              <div class="role-icon-large" id="secret-role-icon">👑</div>
+              <div class="role-banner-tag" id="secret-role-name">RAJA</div>
+              <p class="role-desc-text" id="secret-role-desc">You are the King! 1000 Points</p>
+            </div>
+          </div>
+        </div>
+
+        <button id="toggle-flip-btn" class="btn btn-dark-pill">
+          👁️ Tap to Reveal
+        </button>
+
+        <div class="ready-action-area">
+          <button id="im-ready-btn" class="btn btn-gold btn-full btn-lg" disabled>
+            ✅ I'm Ready
+          </button>
+          <p id="ready-status-text" class="ready-subtext">Reveal your chit first to continue</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         SCREEN 4: PUBLIC ROLE REVEAL & SIPAHI'S GUESS
+    ========================================================== -->
+    <section id="screen-game" class="screen dark-screen">
+      <div class="dark-top-bar">
+        <span id="game-round-badge" class="dark-pill">Round 1</span>
+        <span class="dark-brand">👑 Raja Chor Sipahi Mantri</span>
+        <span class="dark-pill live-dot">● Live</span>
+      </div>
+
+      <div class="arena-container">
+        <div class="arena-banner">👥 Roles Revealed (to all players)</div>
+
+        <!-- Top Card: RAJA -->
+        <div class="public-role-card card-raja">
+          <div class="role-card-icon">👑</div>
+          <div class="role-card-divider"></div>
+          <div class="role-card-info">
+            <span class="role-card-title">Raja</span>
+            <span class="role-card-player" id="arena-raja-name">Player 1</span>
+          </div>
+          <span class="role-pts-tag">+1000</span>
+        </div>
+
+        <div class="connector-line"></div>
+
+        <!-- Second Card: SIPAHI -->
+        <div class="public-role-card card-sipahi">
+          <div class="role-card-icon">🛡️</div>
+          <div class="role-card-divider"></div>
+          <div class="role-card-info">
+            <span class="role-card-title">Sipahi</span>
+            <span class="role-card-player" id="arena-sipahi-name">Player 2</span>
+          </div>
+          <span class="role-pts-tag">? pts</span>
+        </div>
+
+        <div class="connector-line"></div>
+
+        <!-- Prompt Banner -->
+        <div class="sipahi-prompt-pill" id="sipahi-prompt-banner">
+          🎯 Sipahi, Choose the Chor!
+        </div>
+
+        <!-- Bottom Side-by-Side Suspect Cards (Chor vs Mantri hidden) -->
+        <div class="suspects-grid">
+          <button type="button" class="suspect-card suspect-pink" id="suspect-card-0" data-player-id="">
+            <div class="suspect-mystery-avatar">❓</div>
+            <div class="suspect-name-pill" id="suspect-name-0">Player 3</div>
+            <div class="suspect-radio" id="suspect-radio-0"></div>
+          </button>
+
+          <button type="button" class="suspect-card suspect-amber" id="suspect-card-1" data-player-id="">
+            <div class="suspect-mystery-avatar">❓</div>
+            <div class="suspect-name-pill" id="suspect-name-1">Player 4</div>
+            <div class="suspect-radio" id="suspect-radio-1"></div>
+          </button>
+        </div>
+
+        <!-- Confirm Button (Interactive only for Sipahi) -->
+        <button id="confirm-guess-btn" class="btn btn-confirm btn-full btn-lg" disabled>
+          ✔ Confirm Selection
+        </button>
+        <p id="spectator-hint" class="spectator-note hidden">
+          Waiting for <strong id="waiting-sipahi-name">Sipahi</strong> to lock in their guess...
+        </p>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         SCREEN 5 & 6: RESULT ANIMATIONS, JAIL BARS & LEADERBOARD
+    ========================================================== -->
+    <section id="screen-result" class="screen dark-screen">
+      <div class="dark-top-bar">
+        <span id="result-round-badge" class="dark-pill">Round 1 Result</span>
+        <span class="dark-brand">👑 Raja Chor Sipahi Mantri</span>
+        <span class="dark-pill">Scores</span>
+      </div>
+
+      <!-- Outcome Banner (Green for Correct, Red for Wrong) -->
+      <div id="outcome-banner" class="outcome-ribbon ribbon-correct">
+        <div class="ribbon-main">
+          <span id="outcome-icon">✔</span>
+          <strong id="outcome-title">CORRECT!</strong>
+        </div>
+        <p id="outcome-subtitle">Sipahi ne sahi Chor pakda!</p>
+      </div>
+
+      <!-- Jail & Reaction Stage -->
+      <div class="jail-stage">
+        <div class="reaction-box" id="reaction-box">
+          <div class="reaction-emoji" id="reaction-emoji">🛡️🥳</div>
+          <div class="reaction-caption" id="reaction-caption">Sipahi Wins!</div>
+        </div>
+
+        <div class="jail-cell">
+          <div class="prisoner-card">
+            <div class="prisoner-avatar" id="jailed-avatar">🦹</div>
+            <div class="prisoner-name" id="jailed-player-name">Player</div>
+            <div class="prisoner-role" id="jailed-role-label">Chor</div>
+          </div>
+          <!-- Animated Dropping Jail Bars -->
+          <div class="jail-bars-overlay" id="jail-bars">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div class="jail-plate" id="jail-plate-text">Chor Jail Mein!</div>
+        </div>
+      </div>
+
+      <!-- Round Breakdown & Cumulative Leaderboard -->
+      <div class="scoreboard-card">
+        <div class="scoreboard-header">
+          <span>🏆 Standings &amp; Round Points</span>
+          <span>Total</span>
+        </div>
+        <div id="scoreboard-list" class="scoreboard-rows">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <!-- Next Round (Host Only) -->
+      <div class="result-footer">
+        <button id="next-round-btn" class="btn btn-primary btn-full btn-lg hidden">
+          Next Round ❯
+        </button>
+        <div id="guest-next-round-msg" class="guest-wait-box hidden">
+          Waiting for Host to start the next round...
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
