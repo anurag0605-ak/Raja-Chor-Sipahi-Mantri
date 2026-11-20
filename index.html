@@ -4,13 +4,28 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Raja Chor Sipahi Mantri — Private Multiplayer</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body class="theme-light">
+
+  <div class="global-controls" aria-label="Quick controls">
+    <button id="menu-toggle-btn" class="global-control-btn" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="app-menu" title="Menu">
+      <span class="hamburger-icon" aria-hidden="true"><span></span><span></span><span></span></span>
+    </button>
+    <div id="app-menu" class="app-menu hidden">
+      <button id="theme-toggle-btn" type="button" aria-label="Switch to dark mode">
+        <span id="theme-toggle-icon" aria-hidden="true">🌙</span>
+        <span id="theme-toggle-label">Dark mode</span>
+      </button>
+      <button id="sound-toggle-btn" type="button" aria-pressed="true" aria-label="Turn sound off">
+        <span id="sound-toggle-icon" aria-hidden="true">🔊</span>
+        <span id="sound-toggle-label">Sound: On</span>
+      </button>
+      <button id="menu-home-btn" type="button">🏠 Back to Home</button>
+    </div>
+  </div>
 
   <!-- Global Notification / Connection Warning Banner -->
   <div id="toast-banner" class="toast hidden" role="alert">
@@ -62,7 +77,7 @@
           type="text"
           id="player-name-input"
           class="text-input"
-          placeholder="Enter your name (e.g., Aditya)"
+          placeholder="Enter your name (e.g., Anurag)"
           maxlength="16"
           autocomplete="off"
         />
