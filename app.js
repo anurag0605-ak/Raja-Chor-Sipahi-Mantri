@@ -1,9 +1,7 @@
 (() => {
   'use strict';
 
-  // =========================================================
-  // CONSTANTS & ROLE METADATA
-  // =========================================================
+ 
   const PEER_PREFIX = 'rcsm-private-';
   const MAX_PLAYERS = 4;
   const ROLES = ['Raja', 'Chor', 'Sipahi', 'Mantri'];
@@ -54,6 +52,7 @@
     myRole: null,          // Strictly private per player until round ends
     isCardFlipped: false,
     isReady: false,
+    isGuessConfirmed: false,
     round: 1,
     phase: 'HOME',         // HOME | LOBBY | CHIT | GAME | RESULT
     players: [],           // [{ id, name, isHost, score }]
@@ -68,6 +67,11 @@
     hostReadySet: new Set(),
     guestHostConn: null
   };
+
+  let audioContext = null;
+  let masterGain = null;
+  let soundEnabled = true;
+  let heartbeatTimer = null;
 
   // =========================================================
   // DOM REFERENCES
@@ -97,12 +101,34 @@
       $('player-name-input').value = savedName;
     }
 
+    const savedTheme = localStorage.getItem('rcsm_theme');
+    if (savedTheme === 'dark' || savedTheme === 'light') {
+      applyTheme(savedTheme === 'dark');
+    } else {
+      applyTheme(false);
+    }
+
+    soundEnabled = localStorage.getItem('rcsm_sound_enabled') !== 'false';
+    updateSoundControl();
+
     bindEvents();
   }
 
   function bindEvents() {
+    document.addEventListener('pointerdown', unlockAudio, { once: true });
+    document.addEventListener('keydown', unlockAudio, { once: true });
     $('toast-close').addEventListener('click', hideToast);
     $('modal-home-btn').addEventListener('click', resetToHome);
+    $('theme-toggle-btn').addEventListener('click', toggleTheme);
+    $('sound-toggle-btn').addEventListener('click', toggleSound);
+    $('menu-toggle-btn').addEventListener('click', toggleAppMenu);
+    $('menu-home-btn').addEventListener('click', () => {
+      closeAppMenu();
+      resetToHome();
+    });
+    document.addEventListener('click', (event) => {
+      if (!event.target.closest('.global-controls')) closeAppMenu();
+    });
 
     // Screen 1: Home
     $('create-room-btn').addEventListener('click', handleCreateRoom);
@@ -140,18 +166,162 @@
     });
   }
 
+  function unlockAudio() {
+    document.removeEventListener('pointerdown', unlockAudio);
+    document.removeEventListener('keydown', unlockAudio);
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextConstructor) return;
+
+    audioContext = new AudioContextConstructor();
+    masterGain = audioContext.createGain();
+    masterGain.gain.value = soundEnabled ? 1 : 0;
+    masterGain.connect(audioContext.destination);
+    if (audioContext.state === 'suspended') {
+      audioContext.resume().catch((error) => {
+        console.error('Unable to start game audio:', error);
+      });
+    }
+  }
+
+  function scheduleTone(context, frequency, startAt, duration, waveform, volume, endFrequency) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+
+    oscillator.type = waveform;
+    oscillator.frequency.setValueAtTime(frequency, startAt);
+    if (endFrequency !== frequency) {
+      oscillator.frequency.exponentialRampToValueAtTime(endFrequency, startAt + duration);
+    }
+
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(volume, startAt + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+
+    oscillator.connect(gain);
+    gain.connect(masterGain);
+    oscillator.start(startAt);
+    oscillator.stop(startAt + duration + 0.02);
+  }
+
+  function playSoundEffect(effect, delay = 0) {
+    if (!soundEnabled || !audioContext || audioContext.state !== 'running') return;
+    const startAt = audioContext.currentTime + delay;
+
+    if (effect === 'correct') {
+      [[523, 0, 0.12], [659, 0.1, 0.12], [784, 0.2, 0.16]]
+        .forEach(([frequency, offset, duration]) => {
+          scheduleTone(audioContext, frequency, startAt + offset, duration, 'triangle', 0.12, frequency);
+        });
+    } else if (effect === 'wrong') {
+      [[392, 0, 0.2], [311, 0.18, 0.22], [233, 0.38, 0.34]]
+        .forEach(([frequency, offset, duration]) => {
+          scheduleTone(audioContext, frequency, startAt + offset, duration, 'sawtooth', 0.07, frequency * 0.94);
+        });
+    } else if (effect === 'raja') {
+      [[392, 0, 0.2], [494, 0.14, 0.2], [587, 0.28, 0.24], [784, 0.46, 0.42]]
+        .forEach(([frequency, offset, duration]) => {
+          scheduleTone(audioContext, frequency, startAt + offset, duration, 'triangle', 0.1, frequency);
+          scheduleTone(audioContext, frequency * 2, startAt + offset, duration * 0.8, 'sine', 0.025, frequency * 2);
+        });
+    } else if (effect === 'jail') {
+      scheduleTone(audioContext, 185, startAt, 0.42, 'sawtooth', 0.12, 58);
+      scheduleTone(audioContext, 740, startAt, 0.28, 'square', 0.035, 280);
+      scheduleTone(audioContext, 92, startAt + 0.04, 0.48, 'triangle', 0.12, 48);
+    } else if (effect === 'heartbeat') {
+      scheduleTone(audioContext, 145, startAt, 0.12, 'triangle', 0.18, 65);
+      scheduleTone(audioContext, 115, startAt + 0.14, 0.12, 'triangle', 0.15, 55);
+    }
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    if (!soundEnabled || !audioContext) return;
+
+    const beginLoop = () => {
+      if (!soundEnabled || state.phase !== 'GAME' || state.myRole !== 'Sipahi' || state.isGuessConfirmed) return;
+      playSoundEffect('heartbeat');
+      heartbeatTimer = setInterval(() => playSoundEffect('heartbeat'), 360);
+    };
+
+    if (audioContext.state === 'running') {
+      beginLoop();
+    } else if (audioContext.state === 'suspended') {
+      audioContext.resume().then(beginLoop).catch((error) => {
+        console.error('Unable to resume heartbeat audio:', error);
+      });
+    }
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  function updateSoundControl() {
+    $('sound-toggle-icon').textContent = soundEnabled ? '🔊' : '🔇';
+    $('sound-toggle-label').textContent = `Sound: ${soundEnabled ? 'On' : 'Off'}`;
+    $('sound-toggle-btn').setAttribute('aria-pressed', String(soundEnabled));
+    $('sound-toggle-btn').setAttribute('aria-label', soundEnabled ? 'Turn sound off' : 'Turn sound on');
+    if (masterGain) masterGain.gain.setTargetAtTime(soundEnabled ? 1 : 0, audioContext.currentTime, 0.02);
+    if (soundEnabled && state.phase === 'GAME' && state.myRole === 'Sipahi' && !state.isGuessConfirmed) {
+      startHeartbeat();
+    } else {
+      stopHeartbeat();
+    }
+  }
+
+  function toggleSound() {
+    soundEnabled = !soundEnabled;
+    localStorage.setItem('rcsm_sound_enabled', String(soundEnabled));
+    updateSoundControl();
+  }
+
   // =========================================================
   // VIEW & THEME MANAGER
   // =========================================================
+  function applyTheme(isDark) {
+    document.body.classList.toggle('theme-dark', isDark);
+    document.body.classList.toggle('theme-light', !isDark);
+    $('theme-toggle-icon').textContent = isDark ? '☀️' : '🌙';
+    const themeLabel = isDark ? 'Light mode' : 'Dark mode';
+    $('theme-toggle-label').textContent = themeLabel;
+    $('theme-toggle-btn').setAttribute('aria-label', `Switch to ${themeLabel.toLowerCase()}`);
+  }
+
+  function toggleTheme() {
+    const isDark = !document.body.classList.contains('theme-dark');
+    localStorage.setItem('rcsm_theme', isDark ? 'dark' : 'light');
+    applyTheme(isDark);
+  }
+
+  function toggleAppMenu() {
+    const menu = $('app-menu');
+    const isOpen = !menu.classList.contains('hidden');
+    menu.classList.toggle('hidden', isOpen);
+    $('menu-toggle-btn').setAttribute('aria-expanded', String(!isOpen));
+  }
+
+  function closeAppMenu() {
+    $('app-menu').classList.add('hidden');
+    $('menu-toggle-btn').setAttribute('aria-expanded', 'false');
+  }
+
   function switchScreen(screenKey) {
+    if (screenKey !== 'GAME') stopHeartbeat();
     state.phase = screenKey;
     Object.entries(screens).forEach(([key, el]) => {
       el.classList.toggle('active', key === screenKey);
     });
 
-    const isDark = ['CHIT', 'GAME', 'RESULT'].includes(screenKey);
-    document.body.classList.toggle('theme-dark', isDark);
-    document.body.classList.toggle('theme-light', !isDark);
+    const savedTheme = localStorage.getItem('rcsm_theme');
+    if (savedTheme === 'dark' || savedTheme === 'light') {
+      applyTheme(savedTheme === 'dark');
+    } else {
+      applyTheme(['CHIT', 'GAME', 'RESULT'].includes(screenKey));
+    }
+    closeAppMenu();
   }
 
   let toastTimer = null;
@@ -187,6 +357,7 @@
     state.hostReadySet.clear();
     state.guestHostConn = null;
     state.round = 1;
+    state.isGuessConfirmed = false;
 
     $('disconnect-modal').classList.add('hidden');
     $('create-room-btn').disabled = false;
@@ -769,6 +940,8 @@
   // SCREEN 4: PUBLIC ARENA & SIPAHI'S GUESS
   // =========================================================
   function enterGameplayScreen() {
+    playSoundEffect('raja');
+    state.isGuessConfirmed = false;
     $('game-round-badge').textContent = `Round ${state.round}`;
     $('arena-raja-name').textContent = state.rajaPlayer.name;
     $('arena-sipahi-name').textContent = state.sipahiPlayer.name;
@@ -798,6 +971,8 @@
     }
 
     switchScreen('GAME');
+    if (amISipahi) startHeartbeat();
+    else stopHeartbeat();
   }
 
   function handleSuspectTap(index) {
@@ -826,6 +1001,8 @@
   function handleConfirmGuess() {
     if (state.myRole !== 'Sipahi' || !state.selectedSuspectId) return;
     $('confirm-guess-btn').disabled = true;
+    state.isGuessConfirmed = true;
+    stopHeartbeat();
 
     if (state.isHost) {
       hostResolveRound(state.selectedSuspectId);
@@ -878,6 +1055,9 @@
 
   function renderResultScreen(data) {
     const { round, isCorrect, breakdown } = data;
+    stopHeartbeat();
+    playSoundEffect(isCorrect ? 'correct' : 'wrong');
+    if (isCorrect) playSoundEffect('jail', 0.36);
     $('result-round-badge').textContent = `Round ${round} Result`;
 
     const ribbon = $('outcome-banner');
