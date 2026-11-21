@@ -530,6 +530,8 @@
 
   function switchScreen(screenKey) {
     state.phase = screenKey;
+    document.body.classList.toggle('chit-screen-active', screenKey === 'CHIT');
+    document.body.classList.toggle('dark-screen-active', ['CHIT', 'GAME', 'RESULT'].includes(screenKey));
     Object.entries(screens).forEach(([key, el]) => {
       el.classList.toggle('active', key === screenKey);
     });
