@@ -4,6 +4,9 @@
  
   const PEER_PREFIX = 'rcsm-private-';
   const MAX_PLAYERS = 4;
+  const DEFAULT_SOUND_VOLUME = 0.3;
+  const SESSION_STORAGE_KEY = 'rcsm_active_session_v1';
+  const PLAYER_RECONNECT_GRACE_MS = 40000;
   const ROLES = ['Raja', 'Chor', 'Sipahi', 'Mantri'];
 
   const ROLE_INFO = {
@@ -56,7 +59,9 @@
     isGuessConfirmed: false,
     round: 1,
     phase: 'HOME',         // HOME | LOBBY | CHIT | GAME | RESULT
-    players: [],           // [{ id, name, isHost, score }]
+    sessionId: '',
+    lastResult: null,
+    players: [],           // [{ id, name, isHost, isBot, score }]
     selectedSuspectId: null,
     suspects: [],          // [{ id, name }] (Only the 2 non-Raja/non-Sipahi players)
     rajaPlayer: null,
@@ -72,11 +77,18 @@
   let audioContext = null;
   let masterGain = null;
   let soundEnabled = true;
+  let soundVolume = DEFAULT_SOUND_VOLUME;
   let rajaRevealAudio = null;
   let hasPlayedRajaRevealSound = false;
   let correctGuessAudio = null;
   let wrongGuessAudio = null;
   let jailAudio = null;
+  let guestReconnectAttempt = 0;
+  let guestReconnectTimer = null;
+  let guestReconnecting = false;
+  let sessionAbandoned = false;
+  let botTurnTimeout = null;
+  const reconnectTimers = new Map();
 
   function getGameSoundSettings() {
     // Use null for the full clip; set seconds (for example 2.5) to crop the audio.
@@ -120,6 +132,105 @@
     RESULT: $('screen-result')
   };
 
+  function createSessionId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  function readSavedSession() {
+    let raw;
+    try {
+      raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    } catch (error) {
+      console.error('Unable to read the saved game session:', error);
+      showToast('Could not restore the saved game session.', '⚠️');
+      return null;
+    }
+    if (!raw) return null;
+
+    try {
+      const saved = JSON.parse(raw);
+      const valid = saved &&
+        saved.version === 1 &&
+        typeof saved.sessionId === 'string' &&
+        /^[A-Z0-9]{6}$/.test(saved.roomCode) &&
+        typeof saved.myName === 'string' &&
+        typeof saved.isHost === 'boolean' &&
+        ['HOME', 'LOBBY', 'CHIT', 'GAME', 'RESULT'].includes(saved.phase) &&
+        Array.isArray(saved.players);
+      if (valid) return saved;
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      return null;
+    } catch (error) {
+      console.error('Unable to parse the saved game session:', error);
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      return null;
+    }
+  }
+
+  function persistSession() {
+    if (!state.sessionId || !state.roomCode || !state.myName) return;
+
+    const saved = {
+      version: 1,
+      sessionId: state.sessionId,
+      roomCode: state.roomCode,
+      myName: state.myName,
+      isHost: state.isHost,
+      myId: state.isHost ? state.myId : '',
+      phase: state.phase,
+      myRole: state.myRole,
+      round: state.round,
+      isCardFlipped: state.isCardFlipped,
+      isReady: state.isReady,
+      isGuessConfirmed: state.isGuessConfirmed,
+      players: state.players.map((player) => ({
+        id: player.id,
+        name: player.name,
+        isHost: player.isHost,
+        isBot: Boolean(player.isBot),
+        score: player.score,
+        resumeId: player.resumeId || ''
+      })),
+      hostSecretRoles: Array.from(state.hostSecretRoles.entries()),
+      hostReadySet: Array.from(state.hostReadySet),
+      selectedSuspectId: state.selectedSuspectId,
+      suspects: state.suspects,
+      rajaPlayer: state.rajaPlayer,
+      sipahiPlayer: state.sipahiPlayer,
+      lastResult: state.lastResult
+    };
+
+    try {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(saved));
+    } catch (error) {
+      console.error('Unable to save the game session:', error);
+      showToast('Could not save your game session in this browser.', '⚠️');
+    }
+  }
+
+  function restoreSession(saved) {
+    state.sessionId = saved.sessionId;
+    state.roomCode = saved.roomCode;
+    state.myName = saved.myName;
+    state.isHost = saved.isHost;
+    state.myId = saved.isHost ? saved.myId : '';
+    state.phase = saved.phase;
+    state.myRole = saved.myRole || null;
+    state.round = Number.isInteger(saved.round) ? saved.round : 1;
+    state.isCardFlipped = Boolean(saved.isCardFlipped);
+    state.isReady = Boolean(saved.isReady);
+    state.isGuessConfirmed = Boolean(saved.isGuessConfirmed);
+    state.players = saved.players;
+    state.hostSecretRoles = new Map(Array.isArray(saved.hostSecretRoles) ? saved.hostSecretRoles : []);
+    state.hostReadySet = new Set(Array.isArray(saved.hostReadySet) ? saved.hostReadySet : []);
+    state.selectedSuspectId = saved.selectedSuspectId || null;
+    state.suspects = Array.isArray(saved.suspects) ? saved.suspects : [];
+    state.rajaPlayer = saved.rajaPlayer || null;
+    state.sipahiPlayer = saved.sipahiPlayer || null;
+    state.lastResult = saved.lastResult || null;
+  }
+
   // =========================================================
   // INITIALIZATION & URL INVITE PARSING
   // =========================================================
@@ -143,9 +254,25 @@
     }
 
     soundEnabled = localStorage.getItem('rcsm_sound_enabled') !== 'false';
+    const savedVolume = localStorage.getItem('rcsm_sound_volume');
+    if (savedVolume !== null && Number.isFinite(Number(savedVolume))) {
+      soundVolume = Math.min(1, Math.max(0, Number(savedVolume)));
+    }
     updateSoundControl();
 
+    const savedSession = readSavedSession();
+    if (savedSession) {
+      restoreSession(savedSession);
+      $('player-name-input').value = state.myName;
+    }
+
     bindEvents();
+    window.addEventListener('pagehide', persistSession);
+
+    if (savedSession) {
+      restoreSessionScreen();
+      startSessionResume();
+    }
   }
 
   function bindEvents() {
@@ -155,6 +282,9 @@
     $('modal-home-btn').addEventListener('click', resetToHome);
     $('theme-toggle-btn').addEventListener('click', toggleTheme);
     $('sound-toggle-btn').addEventListener('click', toggleSound);
+    $('sound-volume-slider').addEventListener('input', (event) => {
+      setSoundVolume(Number(event.target.value) / 100);
+    });
     $('menu-toggle-btn').addEventListener('click', toggleAppMenu);
     $('menu-home-btn').addEventListener('click', () => {
       closeAppMenu();
@@ -167,6 +297,9 @@
     // Screen 1: Home
     $('create-room-btn').addEventListener('click', handleCreateRoom);
     $('join-room-btn').addEventListener('click', handleJoinRoom);
+    $('bot-count-select').addEventListener('change', (event) => {
+      setBotCount(Number(event.target.value));
+    });
     $('room-code-input').addEventListener('input', (e) => {
       e.target.value = e.target.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
     });
@@ -208,7 +341,7 @@
 
     audioContext = new AudioContextConstructor();
     masterGain = audioContext.createGain();
-    masterGain.gain.value = soundEnabled ? 1 : 0;
+    masterGain.gain.value = soundEnabled ? soundVolume : 0;
     masterGain.connect(audioContext.destination);
     if (audioContext.state === 'suspended') {
       audioContext.resume().catch((error) => {
@@ -242,7 +375,7 @@
     if (!audio) {
       audio = new Audio(encodeAudioPath(settings.path));
       audio.preload = 'auto';
-      audio.volume = 1;
+      audio.volume = soundVolume;
     }
 
     const startPlayback = () => {
@@ -315,14 +448,48 @@
   }
 
   function updateSoundControl() {
-    $('sound-toggle-icon').textContent = soundEnabled ? '🔊' : '🔇';
+    const volumeLevel = !soundEnabled || soundVolume === 0
+      ? 'off'
+      : soundVolume <= 0.3
+        ? 'low'
+        : soundVolume <= 0.65
+          ? 'medium'
+          : 'high';
+    $('sound-toggle-icon').setAttribute('data-level', volumeLevel);
     $('sound-toggle-label').textContent = `Sound: ${soundEnabled ? 'On' : 'Off'}`;
     $('sound-toggle-btn').setAttribute('aria-pressed', String(soundEnabled));
     $('sound-toggle-btn').setAttribute('aria-label', soundEnabled ? 'Turn sound off' : 'Turn sound on');
-    if (masterGain) masterGain.gain.setTargetAtTime(soundEnabled ? 1 : 0, audioContext.currentTime, 0.02);
+    $('sound-volume-slider').value = String(Math.round(soundVolume * 100));
+    $('sound-volume-value').textContent = `${Math.round(soundVolume * 100)}%`;
+    if (masterGain) masterGain.gain.setTargetAtTime(soundEnabled ? soundVolume : 0, audioContext.currentTime, 0.02);
+  }
+
+  function setSoundVolume(volume) {
+    const wasMutedAtZero = soundVolume === 0;
+    soundVolume = Math.min(1, Math.max(0, volume));
+    if (soundVolume === 0) {
+      soundEnabled = false;
+      [rajaRevealAudio, correctGuessAudio, wrongGuessAudio, jailAudio].forEach(stopAudio);
+    } else if (wasMutedAtZero) {
+      soundEnabled = true;
+    }
+
+    localStorage.setItem('rcsm_sound_enabled', String(soundEnabled));
+    localStorage.setItem('rcsm_sound_volume', String(soundVolume));
+    [rajaRevealAudio, correctGuessAudio, wrongGuessAudio, jailAudio]
+      .filter(Boolean)
+      .forEach((audio) => {
+        audio.volume = soundVolume;
+      });
+    updateSoundControl();
   }
 
   function toggleSound() {
+    if (!soundEnabled && soundVolume === 0) {
+      setSoundVolume(DEFAULT_SOUND_VOLUME);
+      return;
+    }
+
     soundEnabled = !soundEnabled;
     localStorage.setItem('rcsm_sound_enabled', String(soundEnabled));
     if (!soundEnabled) {
@@ -374,6 +541,7 @@
       applyTheme(['CHIT', 'GAME', 'RESULT'].includes(screenKey));
     }
     closeAppMenu();
+    persistSession();
   }
 
   let toastTimer = null;
@@ -396,13 +564,39 @@
   }
 
   function resetToHome() {
-    if (state.peer) {
-      try { state.peer.destroy(); } catch (_) {}
+    sessionAbandoned = true;
+    guestReconnecting = false;
+    clearTimeout(guestReconnectTimer);
+    guestReconnectTimer = null;
+    clearTimeout(botTurnTimeout);
+    botTurnTimeout = null;
+    reconnectTimers.forEach(clearTimeout);
+    reconnectTimers.clear();
+    const peerToDestroy = state.peer;
+
+    if (state.isHost) {
+      broadcast({ type: 'ROOM_CLOSED' });
+    } else if (state.guestHostConn && state.guestHostConn.open) {
+      state.guestHostConn.send({ type: 'LEAVE_SESSION', resumeId: state.sessionId });
+    }
+
+    if (peerToDestroy) {
+      window.setTimeout(() => {
+        try { peerToDestroy.destroy(); } catch (_) {}
+      }, 100);
+    }
+    try {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch (error) {
+      console.error('Unable to clear the saved game session:', error);
     }
     [rajaRevealAudio, correctGuessAudio, wrongGuessAudio, jailAudio].forEach(stopAudio);
     state.peer = null;
     state.isHost = false;
     state.roomCode = '';
+    state.sessionId = '';
+    state.myId = '';
+    state.myName = '';
     state.myRole = null;
     state.players = [];
     state.hostConnections.clear();
@@ -411,11 +605,207 @@
     state.guestHostConn = null;
     state.round = 1;
     state.isGuessConfirmed = false;
+    state.lastResult = null;
+    state.suspects = [];
+    state.rajaPlayer = null;
+    state.sipahiPlayer = null;
+    state.selectedSuspectId = null;
+    state.isReady = false;
+    state.isCardFlipped = false;
 
     $('disconnect-modal').classList.add('hidden');
     $('create-room-btn').disabled = false;
     $('join-room-btn').disabled = false;
     switchScreen('HOME');
+  }
+
+  function restoreSessionScreen() {
+    if (state.phase === 'LOBBY') {
+      renderLobby();
+      switchScreen('LOBBY');
+      return;
+    }
+    if (state.phase === 'CHIT' && state.myRole) {
+      const savedReady = state.isReady;
+      const savedFlipped = state.isCardFlipped;
+      enterChitScreen();
+      state.isReady = savedReady;
+      state.isCardFlipped = savedFlipped && !savedReady;
+
+      if (savedReady) {
+        $('im-ready-btn').disabled = true;
+        $('im-ready-btn').textContent = '⏳ Waiting for others...';
+        $('ready-status-text').textContent = 'Role confirmed! Waiting for all 4 friends...';
+      } else if (savedFlipped) {
+        $('secret-flip-card').classList.add('is-flipped');
+        $('toggle-flip-btn').textContent = '🙈 Tap to Hide';
+        $('chit-instruction').textContent = 'Tap again to hide from neighbors';
+        $('im-ready-btn').disabled = false;
+        $('ready-status-text').textContent = 'Tap "I\'m Ready" once you\'ve seen your role';
+      }
+
+      $('ready-counter-badge').textContent = `${state.hostReadySet.size}/4 Ready`;
+      persistSession();
+      return;
+    }
+    if (state.phase === 'GAME' && state.rajaPlayer && state.sipahiPlayer) {
+      const selectedSuspectId = state.selectedSuspectId;
+      const guessConfirmed = state.isGuessConfirmed;
+      enterGameplayScreen();
+      state.selectedSuspectId = selectedSuspectId;
+      state.isGuessConfirmed = guessConfirmed;
+      if (selectedSuspectId) applySuspectHighlight(selectedSuspectId);
+      if (guessConfirmed) $('confirm-guess-btn').disabled = true;
+      persistSession();
+      return;
+    }
+    if (state.phase === 'RESULT' && state.lastResult) {
+      renderResultScreen(state.lastResult);
+      return;
+    }
+    if (state.phase !== 'HOME') {
+      showToast('Saved game data was incomplete. Rejoin the room to continue.', '⚠️');
+      switchScreen('HOME');
+    }
+  }
+
+  function startSessionResume() {
+    sessionAbandoned = false;
+    if (state.isHost) {
+      showToast('Restoring your room...', '🔄');
+      resumeHostPeer();
+    } else {
+      guestReconnecting = true;
+      guestReconnectAttempt = 0;
+      showToast('Reconnecting to your game...', '🔄');
+      scheduleGuestReconnect();
+    }
+  }
+
+  function resumeHostPeer() {
+    if (sessionAbandoned) return;
+
+    let peer;
+    try {
+      peer = new Peer(PEER_PREFIX + state.roomCode, PEER_CONFIG);
+    } catch (error) {
+      console.error('Unable to restore the host connection:', error);
+      showToast('Could not reconnect as host. Please try again.', '🔌');
+      return;
+    }
+
+    state.peer = peer;
+    let retryScheduled = false;
+    peer.on('connection', handleIncomingGuestConnection);
+    peer.on('open', (id) => {
+      if (state.peer !== peer || sessionAbandoned) return;
+      state.myId = id;
+      let hostPlayer = state.players.find((player) => player.isHost);
+      if (!hostPlayer) {
+        hostPlayer = {
+          id,
+          name: state.myName,
+          isHost: true,
+          score: 0,
+          resumeId: state.sessionId
+        };
+        state.players.unshift(hostPlayer);
+      } else {
+        hostPlayer.id = id;
+      }
+
+      if (state.phase === 'HOME') state.phase = 'LOBBY';
+      restoreSessionScreen();
+      showToast(`Reconnected to room ${state.roomCode}.`, '✅');
+    });
+    peer.on('error', (error) => {
+      if (state.peer !== peer || sessionAbandoned || retryScheduled) return;
+      if (error.type === 'unavailable-id') {
+        retryScheduled = true;
+        try { peer.destroy(); } catch (_) {}
+        window.setTimeout(resumeHostPeer, 1000);
+      } else {
+        console.error('Unable to restore the host connection:', error);
+        showToast(`Could not restore the room: ${error.type}.`, '🔌');
+      }
+    });
+  }
+
+  function scheduleGuestReconnect() {
+    if (sessionAbandoned || guestReconnectTimer !== null) return;
+    guestReconnectTimer = window.setTimeout(() => {
+      guestReconnectTimer = null;
+      resumeGuestPeer();
+    }, Math.min(1000 + guestReconnectAttempt * 250, 3000));
+    guestReconnectAttempt = Math.min(guestReconnectAttempt + 1, 8);
+  }
+
+  function beginGuestReconnect() {
+    if (sessionAbandoned) return;
+    if (!guestReconnecting) {
+      guestReconnecting = true;
+      guestReconnectAttempt = 0;
+      showToast('Connection lost. Reconnecting to your game...', '🔄');
+    }
+    if (state.peer) {
+      try { state.peer.destroy(); } catch (_) {}
+      state.peer = null;
+      state.guestHostConn = null;
+    }
+    scheduleGuestReconnect();
+  }
+
+  function resumeGuestPeer() {
+    if (sessionAbandoned) return;
+
+    let peer;
+    try {
+      peer = new Peer(PEER_CONFIG);
+    } catch (error) {
+      console.error('Unable to reconnect to the saved game:', error);
+      scheduleGuestReconnect();
+      return;
+    }
+    state.peer = peer;
+    let retryScheduled = false;
+
+    const retry = (error) => {
+      if (retryScheduled || sessionAbandoned || !guestReconnecting) return;
+      retryScheduled = true;
+      if (error && error.type !== 'peer-unavailable') {
+        console.error('Guest reconnection attempt failed:', error);
+      }
+      try { peer.destroy(); } catch (_) {}
+      scheduleGuestReconnect();
+    };
+
+    peer.on('open', (myId) => {
+      if (state.peer !== peer || sessionAbandoned) return;
+      state.myId = myId;
+      const conn = peer.connect(PEER_PREFIX + state.roomCode, { reliable: true });
+      state.guestHostConn = conn;
+
+      conn.on('open', () => {
+        conn.send({
+          type: 'JOIN_REQUEST',
+          name: state.myName,
+          resumeId: state.sessionId
+        });
+      });
+      conn.on('data', (data) => {
+        handleMessageFromHost(data);
+        if (data && ['RESUME_STATE', 'LOBBY_UPDATE'].includes(data.type)) {
+          guestReconnecting = false;
+          guestReconnectAttempt = 0;
+          guestReconnectTimer = null;
+        }
+      });
+      conn.on('close', () => {
+        if (!sessionAbandoned && !retryScheduled) beginGuestReconnect();
+      });
+      conn.on('error', retry);
+    });
+    peer.on('error', retry);
   }
 
   // =========================================================
@@ -457,6 +847,8 @@
     const name = validateName();
     if (!name) return;
 
+    sessionAbandoned = false;
+    state.sessionId = createSessionId();
     $('create-room-btn').disabled = true;
     const code = generateRoomCode();
     const peerId = PEER_PREFIX + code;
@@ -469,9 +861,9 @@
 
     peer.on('open', (id) => {
       state.myId = id;
-      state.players = [{ id, name, isHost: true, score: 0 }];
-      renderLobby();
+      state.players = [{ id, name, isHost: true, score: 0, resumeId: state.sessionId }];
       switchScreen('LOBBY');
+      renderLobby();
       showToast(`Private room ${code} created!`, '👑');
     });
 
@@ -490,24 +882,14 @@
   }
 
   function handleIncomingGuestConnection(conn) {
-    conn.on('open', () => {
-      // Strict 4-Player Cap & Mid-Game Lock
-      if (state.players.length >= MAX_PLAYERS || state.phase !== 'LOBBY') {
-        conn.send({
-          type: 'ERROR',
-          message: 'Room is full (4/4) or the game has already started.'
-        });
-        setTimeout(() => conn.close(), 250);
-        return;
-      }
-    });
-
     conn.on('data', (data) => {
       if (!data || typeof data !== 'object') return;
 
       switch (data.type) {
         case 'JOIN_REQUEST': {
-          if (state.players.length >= MAX_PLAYERS || state.phase !== 'LOBBY') {
+          const resumeId = String(data.resumeId || '');
+          const existingPlayer = state.players.find((player) => player.resumeId && player.resumeId === resumeId);
+          if (!existingPlayer && (state.players.length >= MAX_PLAYERS || state.phase !== 'LOBBY')) {
             conn.send({
               type: 'ERROR',
               message: 'Room is full or already started.'
@@ -517,16 +899,44 @@
           }
 
           const cleanName = String(data.name || 'Friend').trim().slice(0, 16) || 'Friend';
-          state.hostConnections.set(conn.peer, conn);
-          state.players.push({
-            id: conn.peer,
-            name: cleanName,
-            isHost: false,
-            score: 0
-          });
+          const previousId = existingPlayer ? existingPlayer.id : null;
+          if (existingPlayer) {
+            const timer = reconnectTimers.get(previousId);
+            if (timer !== undefined) {
+              clearTimeout(timer);
+              reconnectTimers.delete(previousId);
+            }
+            remapPeerId(previousId, conn.peer);
+          } else {
+            state.players.push({
+              id: conn.peer,
+              name: cleanName,
+              isHost: false,
+              score: 0,
+              resumeId: resumeId || createSessionId()
+            });
+          }
 
-          broadcastLobbyState();
-          renderLobby();
+          state.hostConnections.set(conn.peer, conn);
+          conn.send(createResumeState(conn.peer));
+          if (state.phase === 'LOBBY') {
+            broadcastLobbyState();
+            renderLobby();
+          } else if (existingPlayer) {
+            broadcast({
+              type: 'PLAYER_RECONNECTED',
+              oldId: previousId,
+              player: publicPlayer(existingPlayer)
+            });
+          }
+          persistSession();
+          break;
+        }
+
+        case 'LEAVE_SESSION': {
+          if (data.resumeId === state.players.find((player) => player.id === conn.peer)?.resumeId) {
+            removeDisconnectedPlayer(conn.peer);
+          }
           break;
         }
 
@@ -535,6 +945,7 @@
           state.hostReadySet.add(conn.peer);
           broadcastReadyCount();
           checkAllPlayersReady();
+          persistSession();
           break;
         }
 
@@ -547,6 +958,7 @@
           state.selectedSuspectId = data.targetId;
           broadcast({ type: 'SUSPECT_HIGHLIGHTED', targetId: data.targetId });
           applySuspectHighlight(data.targetId);
+          persistSession();
           break;
         }
 
@@ -573,18 +985,33 @@
 
   function handlePeerDisconnected(peerId) {
     if (!state.isHost) return;
-    const leavingPlayer = state.players.find((p) => p.id === peerId);
-    if (!leavingPlayer) return;
-
     state.hostConnections.delete(peerId);
-    state.players = state.players.filter((p) => p.id !== peerId);
+    if (!state.players.some((player) => player.id === peerId) || reconnectTimers.has(peerId)) return;
+
+    const timer = window.setTimeout(() => removeDisconnectedPlayer(peerId), PLAYER_RECONNECT_GRACE_MS);
+    reconnectTimers.set(peerId, timer);
+  }
+
+  function removeDisconnectedPlayer(peerId) {
+    const timer = reconnectTimers.get(peerId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      reconnectTimers.delete(peerId);
+    }
+
+    const leavingPlayer = state.players.find((player) => player.id === peerId);
+    if (!leavingPlayer) return;
+    state.hostConnections.delete(peerId);
+    state.hostSecretRoles.delete(peerId);
+    state.hostReadySet.delete(peerId);
+    state.players = state.players.filter((player) => player.id !== peerId);
+    state.suspects = state.suspects.filter((suspect) => suspect.id !== peerId);
 
     if (state.phase === 'LOBBY') {
       broadcastLobbyState();
       renderLobby();
       showToast(`${leavingPlayer.name} left the lobby.`, '👋');
     } else {
-      // Mid-game disconnect warning
       broadcast({
         type: 'PLAYER_DISCONNECTED',
         name: leavingPlayer.name
@@ -594,6 +1021,7 @@
         `${leavingPlayer.name} lost connection mid-game. Return to Home to start a fresh room.`
       );
     }
+    persistSession();
   }
 
   function broadcast(payload) {
@@ -608,8 +1036,56 @@
     broadcast({
       type: 'LOBBY_UPDATE',
       roomCode: state.roomCode,
-      players: state.players
+      players: state.players.map(publicPlayer)
     });
+  }
+
+  function publicPlayer(player) {
+    return {
+      id: player.id,
+      name: player.name,
+      isHost: player.isHost,
+      isBot: Boolean(player.isBot),
+      score: player.score
+    };
+  }
+
+  function createResumeState(playerId) {
+    return {
+      type: 'RESUME_STATE',
+      roomCode: state.roomCode,
+      players: state.players.map(publicPlayer),
+      phase: state.phase,
+      round: state.round,
+      role: state.hostSecretRoles.get(playerId) || null,
+      isReady: state.hostReadySet.has(playerId),
+      readyCount: state.hostReadySet.size,
+      raja: state.rajaPlayer,
+      sipahi: state.sipahiPlayer,
+      suspects: state.suspects,
+      selectedSuspectId: state.selectedSuspectId,
+      result: state.lastResult
+    };
+  }
+
+  function remapPeerId(oldId, newId) {
+    const player = state.players.find((entry) => entry.id === oldId);
+    if (!player || oldId === newId) return;
+
+    player.id = newId;
+    if (state.hostSecretRoles.has(oldId)) {
+      const role = state.hostSecretRoles.get(oldId);
+      state.hostSecretRoles.delete(oldId);
+      state.hostSecretRoles.set(newId, role);
+    }
+    if (state.hostReadySet.delete(oldId)) state.hostReadySet.add(newId);
+    state.hostConnections.delete(oldId);
+    state.suspects = state.suspects.map((suspect) =>
+      suspect.id === oldId ? { ...suspect, id: newId } : suspect
+    );
+    if (state.rajaPlayer?.id === oldId) state.rajaPlayer = { ...state.rajaPlayer, id: newId };
+    if (state.sipahiPlayer?.id === oldId) state.sipahiPlayer = { ...state.sipahiPlayer, id: newId };
+    if (state.selectedSuspectId === oldId) state.selectedSuspectId = newId;
   }
 
   // =========================================================
@@ -629,11 +1105,15 @@
     $('join-room-btn').disabled = true;
     showToast('Connecting to Host...', '📡');
 
+    sessionAbandoned = false;
+    guestReconnecting = false;
+    state.sessionId = createSessionId();
     const peer = new Peer(PEER_CONFIG);
     state.peer = peer;
     state.isHost = false;
     state.roomCode = code;
     state.myName = name;
+    persistSession();
 
     let connectionTimeout = null;
 
@@ -647,13 +1127,14 @@
         if (state.phase === 'HOME') {
           $('join-room-btn').disabled = false;
           showToast('Room not found or Host is offline.', '❌');
+          clearSavedSession();
           try { peer.destroy(); } catch (_) {}
         }
       }, 8000);
 
       conn.on('open', () => {
         clearTimeout(connectionTimeout);
-        conn.send({ type: 'JOIN_REQUEST', name });
+        conn.send({ type: 'JOIN_REQUEST', name, resumeId: state.sessionId });
       });
 
       conn.on('data', (data) => {
@@ -663,30 +1144,48 @@
 
       conn.on('close', () => {
         clearTimeout(connectionTimeout);
-        if (state.phase !== 'HOME') {
-          showDisconnectModal(
-            'Host Disconnected',
-            'The Host closed the room or lost internet connection.'
-          );
-        }
+        if (state.phase !== 'HOME') beginGuestReconnect();
       });
 
-      conn.on('error', () => {
+      conn.on('error', (error) => {
         clearTimeout(connectionTimeout);
-        $('join-room-btn').disabled = false;
-        showToast('Could not connect to room.', '❌');
+        if (state.phase === 'HOME') {
+          $('join-room-btn').disabled = false;
+          showToast('Could not connect to room.', '❌');
+          clearSavedSession();
+        } else {
+          beginGuestReconnect();
+        }
+        console.error('Guest connection error:', error);
       });
     });
 
     peer.on('error', (err) => {
       clearTimeout(connectionTimeout);
-      $('join-room-btn').disabled = false;
-      if (err.type === 'peer-unavailable') {
-        showToast(`Room "${code}" does not exist. Check the code!`, '🔍');
+      if (state.phase === 'HOME') {
+        $('join-room-btn').disabled = false;
+        if (err.type === 'peer-unavailable') {
+          showToast(`Room "${code}" does not exist. Check the code!`, '🔍');
+        } else {
+          showToast(`Connection error: ${err.type}`, '🔌');
+        }
+        clearSavedSession();
+        try { peer.destroy(); } catch (_) {}
       } else {
-        showToast(`Connection error: ${err.type}`, '🔌');
+        beginGuestReconnect();
       }
     });
+  }
+
+  function clearSavedSession() {
+    sessionAbandoned = true;
+    guestReconnecting = false;
+    state.sessionId = '';
+    try {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch (error) {
+      console.error('Unable to clear the saved game session:', error);
+    }
   }
 
   function handleMessageFromHost(data) {
@@ -695,8 +1194,37 @@
     switch (data.type) {
       case 'ERROR': {
         $('join-room-btn').disabled = false;
+        if (guestReconnecting) {
+          guestReconnecting = false;
+          sessionAbandoned = true;
+          clearTimeout(guestReconnectTimer);
+          guestReconnectTimer = null;
+          showDisconnectModal('Could Not Reconnect', data.message || 'The saved game session is no longer available.');
+          break;
+        }
         showToast(data.message || 'Unable to join room.', '🚫');
+        clearSavedSession();
         try { state.peer.destroy(); } catch (_) {}
+        break;
+      }
+
+      case 'RESUME_STATE': {
+        state.roomCode = data.roomCode;
+        state.players = data.players;
+        state.round = data.round;
+        state.myRole = data.role || null;
+        state.isReady = Boolean(data.isReady);
+        state.rajaPlayer = data.raja || null;
+        state.sipahiPlayer = data.sipahi || null;
+        state.suspects = Array.isArray(data.suspects) ? data.suspects : [];
+        state.selectedSuspectId = data.selectedSuspectId || null;
+        state.lastResult = data.result || null;
+        state.phase = data.phase;
+        restoreSessionScreen();
+        if (state.phase === 'CHIT') {
+          $('ready-counter-badge').textContent = `${data.readyCount}/4 Ready`;
+        }
+        persistSession();
         break;
       }
 
@@ -707,6 +1235,7 @@
         if (state.phase !== 'LOBBY') {
           switchScreen('LOBBY');
         }
+        persistSession();
         break;
       }
 
@@ -720,6 +1249,7 @@
 
       case 'READY_COUNT': {
         $('ready-counter-badge').textContent = `${data.readyCount}/4 Ready`;
+        persistSession();
         break;
       }
 
@@ -736,6 +1266,7 @@
       case 'SUSPECT_HIGHLIGHTED': {
         state.selectedSuspectId = data.targetId;
         applySuspectHighlight(data.targetId);
+        persistSession();
         break;
       }
 
@@ -752,6 +1283,29 @@
         );
         break;
       }
+
+      case 'PLAYER_RECONNECTED': {
+        state.players = state.players.map((player) =>
+          player.id === data.oldId ? { ...player, ...data.player } : player
+        );
+        state.suspects = state.suspects.map((suspect) =>
+          suspect.id === data.oldId ? { ...suspect, id: data.player.id } : suspect
+        );
+        if (state.rajaPlayer?.id === data.oldId) state.rajaPlayer = { ...state.rajaPlayer, id: data.player.id };
+        if (state.sipahiPlayer?.id === data.oldId) state.sipahiPlayer = { ...state.sipahiPlayer, id: data.player.id };
+        if (state.selectedSuspectId === data.oldId) state.selectedSuspectId = data.player.id;
+        persistSession();
+        break;
+      }
+
+      case 'ROOM_CLOSED': {
+        sessionAbandoned = true;
+        guestReconnecting = false;
+        clearTimeout(guestReconnectTimer);
+        guestReconnectTimer = null;
+        showDisconnectModal('Room Closed', 'The host ended the game session.');
+        break;
+      }
     }
   }
 
@@ -761,7 +1315,15 @@
   function renderLobby() {
     $('display-room-code').textContent = state.roomCode;
     const count = state.players.length;
+    const botCount = state.players.filter((player) => player.isBot).length;
+    const humanCount = count - botCount;
     $('player-count-badge').textContent = `${count} / 4`;
+    $('host-bot-controls').classList.toggle('hidden', !state.isHost);
+    $('bot-count-select').disabled = !state.isHost || state.phase !== 'LOBBY';
+    $('bot-count-select').value = String(botCount);
+    Array.from($('bot-count-select').options).forEach((option) => {
+      option.disabled = Number(option.value) > MAX_PLAYERS - humanCount;
+    });
 
     const statusPill = $('lobby-status-pill');
     if (count === MAX_PLAYERS) {
@@ -782,19 +1344,20 @@
         row.className = 'slot-row';
         row.innerHTML = `
           <div class="slot-left">
-            <span class="slot-avatar">👤</span>
+            <span class="slot-avatar">${p.isBot ? '🤖' : '👤'}</span>
             <span>${escapeHtml(p.name)}</span>
             ${p.isHost ? '<span class="host-tag">👑 Host</span>' : ''}
+            ${p.isBot ? '<span class="bot-tag">Bot</span>' : ''}
             ${p.id === state.myId ? '<span class="host-tag" style="background:#059669;">You</span>' : ''}
           </div>
-          <span class="joined-tag">✔ Joined</span>
+          <span class="joined-tag">${p.isBot ? '🤖 Ready' : '✔ Joined'}</span>
         `;
       } else {
         row.className = 'slot-row empty';
         row.innerHTML = `
           <div class="slot-left">
             <span class="slot-avatar">👤</span>
-            <span>Waiting for friend...</span>
+            <span>Waiting for player...</span>
           </div>
           <span class="waiting-tag">Waiting</span>
         `;
@@ -812,6 +1375,31 @@
       $('start-game-btn').classList.add('hidden');
       $('guest-wait-msg').classList.remove('hidden');
     }
+  }
+
+  function setBotCount(requestedCount) {
+    if (!state.isHost || state.phase !== 'LOBBY') return;
+
+    const humans = state.players.filter((player) => !player.isBot);
+    const maxBotCount = MAX_PLAYERS - humans.length;
+    const targetCount = Math.max(0, Math.min(maxBotCount, requestedCount));
+    const bots = state.players.filter((player) => player.isBot).slice(0, targetCount);
+
+    while (bots.length < targetCount) {
+      const botNumber = bots.length + 1;
+      bots.push({
+        id: `bot-${createSessionId()}`,
+        name: `Bot ${botNumber}`,
+        isHost: false,
+        isBot: true,
+        score: 0
+      });
+    }
+
+    state.players = [...humans, ...bots];
+    renderLobby();
+    broadcastLobbyState();
+    persistSession();
   }
 
   function buildInviteUrl() {
@@ -851,6 +1439,8 @@
     state.hostSecretRoles.clear();
     state.hostReadySet.clear();
     state.selectedSuspectId = null;
+    state.lastResult = null;
+    state.isGuessConfirmed = false;
 
     const shuffledRoles = cryptoShuffle(ROLES);
 
@@ -859,7 +1449,9 @@
       const assignedRole = shuffledRoles[idx];
       state.hostSecretRoles.set(player.id, assignedRole);
 
-      if (player.id === state.myId) {
+      if (player.isBot) {
+        state.hostReadySet.add(player.id);
+      } else if (player.id === state.myId) {
         state.myRole = assignedRole;
       } else {
         const conn = state.hostConnections.get(player.id);
@@ -874,6 +1466,7 @@
     });
 
     enterChitScreen();
+    broadcastReadyCount();
   }
 
   function enterChitScreen() {
@@ -927,6 +1520,7 @@
       $('toggle-flip-btn').textContent = '👁️ Tap to Reveal';
       $('chit-instruction').textContent = 'Chit hidden! Tap to peek again';
     }
+    persistSession();
   }
 
   function handlePlayerReady() {
@@ -949,6 +1543,7 @@
     } else if (state.guestHostConn && state.guestHostConn.open) {
       state.guestHostConn.send({ type: 'PLAYER_READY' });
     }
+    persistSession();
   }
 
   function broadcastReadyCount() {
@@ -1026,6 +1621,29 @@
     }
 
     switchScreen('GAME');
+    if (state.isHost) runBotSipahiTurn();
+  }
+
+  function runBotSipahiTurn() {
+    const botSipahi = state.players.find((player) => player.id === state.sipahiPlayer?.id && player.isBot);
+    if (!botSipahi || state.suspects.length === 0) return;
+
+    clearTimeout(botTurnTimeout);
+    const round = state.round;
+    const guess = cryptoShuffle(state.suspects)[0];
+    botTurnTimeout = window.setTimeout(() => {
+      if (state.phase !== 'GAME' || state.round !== round) return;
+      state.selectedSuspectId = guess.id;
+      applySuspectHighlight(guess.id);
+      broadcast({ type: 'SUSPECT_HIGHLIGHTED', targetId: guess.id });
+      persistSession();
+
+      botTurnTimeout = window.setTimeout(() => {
+        if (state.phase !== 'GAME' || state.round !== round) return;
+        state.isGuessConfirmed = true;
+        hostResolveRound(guess.id);
+      }, 900);
+    }, 1200);
   }
 
   function handleSuspectTap(index) {
@@ -1036,6 +1654,7 @@
     state.selectedSuspectId = suspect.id;
     applySuspectHighlight(suspect.id);
     $('confirm-guess-btn').disabled = false;
+    persistSession();
 
     if (state.isHost) {
       broadcast({ type: 'SUSPECT_HIGHLIGHTED', targetId: suspect.id });
@@ -1055,6 +1674,7 @@
     if (state.myRole !== 'Sipahi' || !state.selectedSuspectId) return;
     $('confirm-guess-btn').disabled = true;
     state.isGuessConfirmed = true;
+    persistSession();
 
     if (state.isHost) {
       hostResolveRound(state.selectedSuspectId);
@@ -1097,15 +1717,17 @@
       type: 'ROUND_RESULT',
       round: state.round,
       isCorrect,
-      players: state.players,
+      players: state.players.map(publicPlayer),
       breakdown: roundBreakdown
     };
 
+    state.lastResult = resultPayload;
     broadcast(resultPayload);
     renderResultScreen(resultPayload);
   }
 
   function renderResultScreen(data) {
+    state.lastResult = data;
     const { round, isCorrect, breakdown } = data;
     playSoundEffect(isCorrect ? 'correct' : 'wrong');
     if (isCorrect) {
