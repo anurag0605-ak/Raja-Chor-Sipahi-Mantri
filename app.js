@@ -28,6 +28,7 @@
       desc: 'Royal Advisor! 800 Points if not mistaken for Chor.'
     }
   };
+  // hostSecretRoles
 
   // Free public STUN servers for reliable WebRTC NAT traversal
   const PEER_CONFIG = {
@@ -71,7 +72,40 @@
   let audioContext = null;
   let masterGain = null;
   let soundEnabled = true;
-  let heartbeatTimer = null;
+  let rajaRevealAudio = null;
+  let hasPlayedRajaRevealSound = false;
+  let correctGuessAudio = null;
+  let wrongGuessAudio = null;
+  let jailAudio = null;
+
+  function getGameSoundSettings() {
+    // Use null for the full clip; set seconds (for example 2.5) to crop the audio.
+    return {
+      rajaReveal: {
+        path: 'asset/Hmm Hmm Raja ji Carryminati meme Raja ji Carryminati template Raja ji Carryminati aayan Template.mp3',
+        durationSeconds: 3
+      },
+      correctGuess: {
+        path: 'asset/Saat Crore kbc meme template #shorts #viral #fdyml #memes.mp3',
+        durationSeconds: null
+      },
+      wrongGuess: {
+        path: 'asset/Ramayan Gayab Sound Effect #soundeffects #nareshsuperstar.mp3',
+        durationSeconds: 2.4
+      },
+      jail: {
+        path: 'asset/Shotgun Fahhhh - Sound Effect #memes #funny #shorts #trending #fx #soundeffects #viral.mp3',
+        durationSeconds: null
+      }
+    };
+  }
+
+  const GAME_SOUND_SETTINGS = getGameSoundSettings();
+  const audioStopTimers = new WeakMap();
+
+  function encodeAudioPath(path) {
+    return path.split('/').map(encodeURIComponent).join('/');
+  }
 
   // =========================================================
   // DOM REFERENCES
@@ -183,6 +217,56 @@
     }
   }
 
+  function playRajaRevealSound() {
+    if (!soundEnabled || state.myRole !== 'Raja' || hasPlayedRajaRevealSound) return;
+
+    rajaRevealAudio = playConfiguredAudio(rajaRevealAudio, GAME_SOUND_SETTINGS.rajaReveal);
+    hasPlayedRajaRevealSound = true;
+  }
+
+  function stopAudio(audio) {
+    if (!audio) return;
+    audio.pause();
+    audio.currentTime = 0;
+
+    const timer = audioStopTimers.get(audio);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      audioStopTimers.delete(audio);
+    }
+  }
+
+  function playConfiguredAudio(audio, settings, delay = 0) {
+    if (!soundEnabled) return;
+
+    if (!audio) {
+      audio = new Audio(encodeAudioPath(settings.path));
+      audio.preload = 'auto';
+      audio.volume = 1;
+    }
+
+    const startPlayback = () => {
+      if (!soundEnabled) return;
+      stopAudio(audio);
+      audio.play().then(() => {
+        if (Number.isFinite(settings.durationSeconds) && settings.durationSeconds >= 0) {
+          const timer = window.setTimeout(() => stopAudio(audio), settings.durationSeconds * 1000);
+          audioStopTimers.set(audio, timer);
+        }
+      }).catch((error) => {
+        console.error(`Unable to play audio "${settings.path}":`, error);
+      });
+    };
+
+    if (delay > 0) {
+      window.setTimeout(startPlayback, delay);
+    } else {
+      startPlayback();
+    }
+
+    return audio;
+  }
+
   function scheduleTone(context, frequency, startAt, duration, waveform, volume, endFrequency) {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
@@ -227,35 +311,6 @@
       scheduleTone(audioContext, 185, startAt, 0.42, 'sawtooth', 0.12, 58);
       scheduleTone(audioContext, 740, startAt, 0.28, 'square', 0.035, 280);
       scheduleTone(audioContext, 92, startAt + 0.04, 0.48, 'triangle', 0.12, 48);
-    } else if (effect === 'heartbeat') {
-      scheduleTone(audioContext, 145, startAt, 0.12, 'triangle', 0.18, 65);
-      scheduleTone(audioContext, 115, startAt + 0.14, 0.12, 'triangle', 0.15, 55);
-    }
-  }
-
-  function startHeartbeat() {
-    stopHeartbeat();
-    if (!soundEnabled || !audioContext) return;
-
-    const beginLoop = () => {
-      if (!soundEnabled || state.phase !== 'GAME' || state.myRole !== 'Sipahi' || state.isGuessConfirmed) return;
-      playSoundEffect('heartbeat');
-      heartbeatTimer = setInterval(() => playSoundEffect('heartbeat'), 360);
-    };
-
-    if (audioContext.state === 'running') {
-      beginLoop();
-    } else if (audioContext.state === 'suspended') {
-      audioContext.resume().then(beginLoop).catch((error) => {
-        console.error('Unable to resume heartbeat audio:', error);
-      });
-    }
-  }
-
-  function stopHeartbeat() {
-    if (heartbeatTimer !== null) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
     }
   }
 
@@ -265,16 +320,14 @@
     $('sound-toggle-btn').setAttribute('aria-pressed', String(soundEnabled));
     $('sound-toggle-btn').setAttribute('aria-label', soundEnabled ? 'Turn sound off' : 'Turn sound on');
     if (masterGain) masterGain.gain.setTargetAtTime(soundEnabled ? 1 : 0, audioContext.currentTime, 0.02);
-    if (soundEnabled && state.phase === 'GAME' && state.myRole === 'Sipahi' && !state.isGuessConfirmed) {
-      startHeartbeat();
-    } else {
-      stopHeartbeat();
-    }
   }
 
   function toggleSound() {
     soundEnabled = !soundEnabled;
     localStorage.setItem('rcsm_sound_enabled', String(soundEnabled));
+    if (!soundEnabled) {
+      [rajaRevealAudio, correctGuessAudio, wrongGuessAudio, jailAudio].forEach(stopAudio);
+    }
     updateSoundControl();
   }
 
@@ -309,7 +362,6 @@
   }
 
   function switchScreen(screenKey) {
-    if (screenKey !== 'GAME') stopHeartbeat();
     state.phase = screenKey;
     Object.entries(screens).forEach(([key, el]) => {
       el.classList.toggle('active', key === screenKey);
@@ -347,6 +399,7 @@
     if (state.peer) {
       try { state.peer.destroy(); } catch (_) {}
     }
+    [rajaRevealAudio, correctGuessAudio, wrongGuessAudio, jailAudio].forEach(stopAudio);
     state.peer = null;
     state.isHost = false;
     state.roomCode = '';
@@ -826,6 +879,7 @@
   function enterChitScreen() {
     state.isCardFlipped = false;
     state.isReady = false;
+    hasPlayedRajaRevealSound = false;
 
     $('chit-round-badge').textContent = `Round ${state.round}`;
     $('ready-counter-badge').textContent = '0/4 Ready';
@@ -864,6 +918,7 @@
     if (state.isCardFlipped) {
       $('toggle-flip-btn').textContent = '🙈 Tap to Hide';
       $('chit-instruction').textContent = 'Tap again to hide from neighbors';
+      playRajaRevealSound();
       if (!state.isReady) {
         $('im-ready-btn').disabled = false;
         $('ready-status-text').textContent = 'Tap "I\'m Ready" once you\'ve seen your role';
@@ -971,8 +1026,6 @@
     }
 
     switchScreen('GAME');
-    if (amISipahi) startHeartbeat();
-    else stopHeartbeat();
   }
 
   function handleSuspectTap(index) {
@@ -1002,7 +1055,6 @@
     if (state.myRole !== 'Sipahi' || !state.selectedSuspectId) return;
     $('confirm-guess-btn').disabled = true;
     state.isGuessConfirmed = true;
-    stopHeartbeat();
 
     if (state.isHost) {
       hostResolveRound(state.selectedSuspectId);
@@ -1055,13 +1107,23 @@
 
   function renderResultScreen(data) {
     const { round, isCorrect, breakdown } = data;
-    stopHeartbeat();
     playSoundEffect(isCorrect ? 'correct' : 'wrong');
-    if (isCorrect) playSoundEffect('jail', 0.36);
+    if (isCorrect) {
+      correctGuessAudio = playConfiguredAudio(correctGuessAudio, GAME_SOUND_SETTINGS.correctGuess);
+      jailAudio = playConfiguredAudio(jailAudio, GAME_SOUND_SETTINGS.jail, 360);
+      playSoundEffect('jail', 0.36);
+    } else {
+      wrongGuessAudio = playConfiguredAudio(wrongGuessAudio, GAME_SOUND_SETTINGS.wrongGuess);
+    }
     $('result-round-badge').textContent = `Round ${round} Result`;
 
     const ribbon = $('outcome-banner');
+    const jailStage = $('jail-stage');
     const jailBars = $('jail-bars');
+
+    jailStage.classList.remove('outcome-correct', 'outcome-wrong');
+    void jailStage.offsetWidth;
+    jailStage.classList.add(isCorrect ? 'outcome-correct' : 'outcome-wrong');
 
     // Re-trigger CSS drop animation cleanly
     jailBars.style.animation = 'none';
@@ -1073,6 +1135,8 @@
 
     if (isCorrect) {
       // Outcome A: Sipahi Catches Chor
+      $('action-raja').textContent = '👑';
+      $('action-chor').textContent = '🦹😰';
       ribbon.className = 'outcome-ribbon ribbon-correct';
       $('outcome-icon').textContent = '✔';
       $('outcome-title').textContent = 'CORRECT!';
@@ -1087,6 +1151,8 @@
       $('jail-plate-text').textContent = 'Chor Jail Mein!';
     } else {
       // Outcome B: Sipahi Chooses Mantri (Wrong)
+      $('action-raja').textContent = '👑😠';
+      $('action-chor').textContent = '🦹😄';
       ribbon.className = 'outcome-ribbon ribbon-wrong';
       $('outcome-icon').textContent = '✖';
       $('outcome-title').textContent = 'WRONG!';
