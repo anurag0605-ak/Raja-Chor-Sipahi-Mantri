@@ -20,9 +20,24 @@
         <span id="theme-toggle-label">Dark mode</span>
       </button>
       <button id="sound-toggle-btn" type="button" aria-pressed="true" aria-label="Turn sound off">
-        <span id="sound-toggle-icon" aria-hidden="true">🔊</span>
+        <span id="sound-toggle-icon" class="sound-icon" data-level="low" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path class="sound-speaker" d="M3 9v6h4l5 4V5L7 9H3z" />
+            <path class="sound-wave sound-wave-1" d="M14 9.5c2.6 1.4 2.6 3.6 0 5" />
+            <path class="sound-wave sound-wave-2" d="M16.5 7.5c4 2.3 4 6.7 0 9" />
+            <path class="sound-wave sound-wave-3" d="M19 5.5c5.4 3.2 5.4 9.8 0 13" />
+            <path class="sound-mute" d="m15 9 6 6m0-6-6 6" />
+          </svg>
+        </span>
         <span id="sound-toggle-label">Sound: On</span>
       </button>
+      <div class="menu-volume-control">
+        <div class="menu-volume-heading">
+          <label for="sound-volume-slider">Volume</label>
+          <output id="sound-volume-value" for="sound-volume-slider">30%</output>
+        </div>
+        <input id="sound-volume-slider" type="range" min="0" max="100" step="5" value="30" aria-label="Sound volume" />
+      </div>
       <button id="menu-home-btn" type="button">🏠 Back to Home</button>
     </div>
   </div>
@@ -110,7 +125,7 @@
       <div class="how-to-card">
         <h3>🎮 How to Play?</h3>
         <ol class="steps-list">
-          <li><span class="step-num">1</span> Create a private room &amp; share the link with 3 friends</li>
+          <li><span class="step-num">1</span> Create a room, invite friends, or fill open seats with bots</li>
           <li><span class="step-num">2</span> Open your secret chit (Raja, Chor, Sipahi, or Mantri)</li>
           <li><span class="step-num">3</span> Sipahi catches the Chor to win bonus points!</li>
         </ol>
@@ -150,6 +165,17 @@
           <span id="player-count-badge" class="count-badge">1 / 4</span>
         </div>
 
+        <div id="host-bot-controls" class="bot-controls hidden">
+          <label for="bot-count-select">🤖 Fill open seats with bots</label>
+          <select id="bot-count-select" class="text-input">
+            <option value="0">No bots</option>
+            <option value="1">1 bot</option>
+            <option value="2">2 bots</option>
+            <option value="3">3 bots</option>
+          </select>
+          <p>Play solo with 3 bots, or add bots alongside friends.</p>
+        </div>
+
         <div id="player-slots-list" class="player-slots">
           <!-- Populated dynamically by JS -->
         </div>
@@ -158,7 +184,7 @@
           <span class="info-icon">⏳</span>
           <div>
             <strong>Waiting for players</strong>
-            <p>Game starts when all 4 friends have joined.</p>
+            <p>Invite friends or add bots until all 4 seats are filled.</p>
           </div>
         </div>
 
