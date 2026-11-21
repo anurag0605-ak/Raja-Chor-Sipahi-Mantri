@@ -125,7 +125,7 @@ body.theme-dark {
   position: absolute;
   top: 50px;
   right: 0;
-  width: 196px;
+  width: 220px;
   padding: 8px;
   border-radius: 14px;
   background: #ffffff;
@@ -153,6 +153,101 @@ body.theme-dark {
   background: var(--purple-soft);
 }
 
+.sound-icon {
+  display: inline-flex;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.sound-icon svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.sound-speaker {
+  fill: currentColor;
+}
+
+.sound-wave,
+.sound-mute {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+  opacity: 0;
+}
+
+.sound-mute {
+  stroke-width: 2;
+}
+
+.sound-icon[data-level="low"] .sound-wave-1,
+.sound-icon[data-level="medium"] .sound-wave-1,
+.sound-icon[data-level="medium"] .sound-wave-2,
+.sound-icon[data-level="high"] .sound-wave {
+  animation: sound-wave-pulse 0.9s ease-in-out infinite alternate;
+}
+
+.sound-icon[data-level="medium"] .sound-wave-2,
+.sound-icon[data-level="high"] .sound-wave-2 {
+  animation-delay: 0.15s;
+}
+
+.sound-icon[data-level="high"] .sound-wave-3 {
+  animation-delay: 0.3s;
+}
+
+.sound-icon[data-level="off"] .sound-mute {
+  opacity: 1;
+}
+
+@keyframes sound-wave-pulse {
+  from { opacity: 0.45; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sound-icon[data-level="low"] .sound-wave-1,
+  .sound-icon[data-level="medium"] .sound-wave-1,
+  .sound-icon[data-level="medium"] .sound-wave-2,
+  .sound-icon[data-level="high"] .sound-wave {
+    animation: none !important;
+    opacity: 1;
+  }
+}
+
+.menu-volume-control {
+  padding: 10px;
+  color: var(--text-dark);
+}
+
+.menu-volume-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.bot-tag {
+  background: #0E7490;
+  color: #fff;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.menu-volume-control input {
+  display: block;
+  width: 100%;
+  accent-color: var(--purple-primary);
+  cursor: pointer;
+}
+
 body.theme-dark .global-control-btn {
   background: rgba(42, 23, 73, 0.96);
   color: #ffffff;
@@ -165,6 +260,10 @@ body.theme-dark .app-menu {
 }
 
 body.theme-dark .app-menu button {
+  color: #ffffff;
+}
+
+body.theme-dark .menu-volume-control {
   color: #ffffff;
 }
 
@@ -210,7 +309,8 @@ body.theme-dark .lobby-card {
 
 body.theme-dark .how-to-card,
 body.theme-dark .room-code-box,
-body.theme-dark .info-banner {
+body.theme-dark .info-banner,
+body.theme-dark .bot-controls {
   background: #241735;
   color: #F5F3FF;
 }
@@ -222,6 +322,7 @@ body.theme-dark .mini-brand {
 
 body.theme-dark .steps-list li,
 body.theme-dark .info-banner p,
+body.theme-dark .bot-controls p,
 body.theme-dark .room-code-hint {
   color: #C4BCCC;
 }
@@ -789,6 +890,31 @@ body.theme-dark .total-pts {
   margin-bottom: 10px;
   font-weight: 800;
   font-size: 0.95rem;
+}
+
+.bot-controls {
+  margin: 0 16px 16px;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--bg-light-subtle);
+}
+
+.bot-controls label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.bot-controls select.text-input {
+  margin: 0 0 6px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+}
+
+.bot-controls p {
+  color: var(--text-muted);
+  font-size: 0.72rem;
 }
 
 .count-badge {
